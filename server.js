@@ -16,7 +16,7 @@ const os = require("os");
 const { FLAGS, GROUPS, MATCHES, TOURNAMENT } = require("./data");
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "v26 · 2026-06-14 (apifootball.com top scorers)";
+const VERSION = "v28 · 2026-06-14 (single scorer source)";
 
 // Best-guess LAN IPv4 so phones on the same Wi-Fi can reach this server.
 function lanIP(){
@@ -120,6 +120,7 @@ let apifcCovered = new Set();   // matches apifootball.com is authoritatively dr
 let apifcStatus = { enabled: !!APIFC_KEY, ok: null, error: null, leagueId: null, covered: 0, lastFetch: null, blocked: false };
 let apifcDebug = {};
 let apifcTopDebug = { lastFetch: null, count: 0, sample: null, error: null };
+let apifcScorersOwned = false;   // once apifootball.com supplies the Golden Boot, it's the single source
 
 // ---- Results store ---------------------------------------------------------
 // Shape: { "M01": { home: 2, away: 1 }, ... }  (only finished/known matches)
@@ -322,7 +323,8 @@ const NAME_ALIASES = {
   unitedstates: "USA", unitedstatesofamerica: "USA",
   turkey: "Türkiye",
   cotedivoire: "Ivory Coast",
-  caboverde: "Cape Verde",
+  caboverde: "Cape Verde", capeverdeislands: "Cape Verde",
+  holland: "Netherlands", thenetherlands: "Netherlands",
   congodr: "DR Congo", drcongo: "DR Congo",
   democraticrepublicofthecongo: "DR Congo", democraticrepublicofcongo: "DR Congo",
   iriran: "Iran",
@@ -386,6 +388,7 @@ async function refreshLive() {
 async function refreshScorers() {
   const token = API_TOKEN;
   if (!token || afScorersActive) return;
+  if (apifcScorersOwned) return;   // apifootball.com is the authoritative Golden Boot source
   try {
     const res = await fetch("https://api.football-data.org/v4/competitions/WC/scorers?limit=30", {
       headers: { "X-Auth-Token": token }
@@ -472,6 +475,7 @@ async function afRefreshDetails(ids){
 // Richer top scorers (goals + assists) from API-Football.
 async function afTopScorers(){
   if (!AF_KEY || afBlocked) return;
+  if (apifcScorersOwned) return;   // apifootball.com is the authoritative source
   try {
     const j = await afFetch(`/players/topscorers?league=${AF_LEAGUE}&season=${AF_SEASON}`);
     const arr = j.response || [];
@@ -762,7 +766,7 @@ async function apifcTopScorers(){
         matches: null
       };
     }).filter(s => s.name !== "Unknown");
-    if (list.length){ scorers = list; }                      // becomes the Golden Boot leaderboard
+    if (list.length){ scorers = list; apifcScorersOwned = true; }   // becomes the Golden Boot leaderboard
     apifcTopDebug = { lastFetch: new Date().toISOString(), count: list.length, sample: j.slice(0,3), error: null };
   } catch(e){ apifcTopDebug.error = String(e.message || e).slice(0,200); }
 }
@@ -1595,7 +1599,7 @@ function renderScorers(){
     let list = (STATE.scorers&&STATE.scorers.length) ? STATE.scorers.map(s=>({name:s.name,team:s.team,flag:s.flag,v:s.goals,assists:s.assists,matches:s.matches})) : null;
     if(!list){ const g=statAgg().goals; list=Object.values(g).sort((a,b)=>b.v-a.v).map(x=>({name:x.name,team:x.team,v:x.v})); }
     body = list.length ? list.slice(0,30).map((s,i)=> scRow(i+1,
-      '<span class="fl">'+(s.flag||flagOf(s.team)||"")+'</span>', s.name,
+      crest(s.team), s.name,
       s.team+(s.matches!=null?' · '+s.matches+' apps':''),
       (s.assists!=null?'<div class="stat sub"><div class="v">'+s.assists+'</div><div class="k">Ast</div></div>':'')+
       '<div class="stat"><div class="v">'+s.v+'</div><div class="k">Goals</div></div>')).join("")
@@ -1603,13 +1607,13 @@ function renderScorers(){
   } else if(STAT_VIEW==="assists"){
     const a=statAgg().assists; const list=Object.values(a).sort((x,y)=>y.v-x.v);
     body = list.length ? list.slice(0,30).map((s,i)=> scRow(i+1,
-      '<span class="fl">'+(flagOf(s.team)||"")+'</span>', s.name, s.team,
+      crest(s.team), s.name, s.team,
       '<div class="stat"><div class="v">'+s.v+'</div><div class="k">Assists</div></div>')).join("")
       : emptyStat("No assists recorded yet","Assist data appears as goals with a provider are logged.");
   } else if(STAT_VIEW==="cards"){
     const c=statAgg().cards; const list=Object.values(c).sort((x,y)=> y.r-x.r || y.y-x.y || (y.r*2+y.y)-(x.r*2+x.y));
     body = list.length ? list.slice(0,40).map((s,i)=> scRow(i+1,
-      '<span class="fl">'+(flagOf(s.team)||"")+'</span>', s.name, s.team,
+      crest(s.team), s.name, s.team,
       '<div class="stat sub"><div class="v">'+s.y+'</div><div class="k">🟨</div></div>'+
       '<div class="stat"><div class="v">'+s.r+'</div><div class="k">🟥</div></div>')).join("")
       : emptyStat("No cards yet","Bookings and dismissals will be tallied here.");
