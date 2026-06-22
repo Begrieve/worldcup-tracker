@@ -16,7 +16,7 @@ const os = require("os");
 const { FLAGS, GROUPS, MATCHES, TOURNAMENT } = require("./data");
 
 const PORT = process.env.PORT || 3000;
-const VERSION = "v25 · 2026-06-14 (mobile access + view-only safety)";
+const VERSION = "v26 · 2026-06-14 (apifootball.com top scorers)";
 
 // Best-guess LAN IPv4 so phones on the same Wi-Fi can reach this server.
 function lanIP(){
@@ -119,6 +119,7 @@ let apifcLeagueId = null;
 let apifcCovered = new Set();   // matches apifootball.com is authoritatively driving
 let apifcStatus = { enabled: !!APIFC_KEY, ok: null, error: null, leagueId: null, covered: 0, lastFetch: null, blocked: false };
 let apifcDebug = {};
+let apifcTopDebug = { lastFetch: null, count: 0, sample: null, error: null };
 
 // ---- Results store ---------------------------------------------------------
 // Shape: { "M01": { home: 2, away: 1 }, ... }  (only finished/known matches)
@@ -738,6 +739,34 @@ async function apifcLoop(){
   setTimeout(apifcLoop, anyLive ? 60*1000 : 5*60*1000);
 }
 
+// Dedicated, complete Golden Boot list straight from apifootball.com (includes assists when provided).
+async function apifcTopScorers(){
+  if (!APIFC_KEY || apifcStatus.blocked) return;
+  if (!apifcLeagueId){ await apifcDiscoverLeague(); if (!apifcLeagueId) return; }
+  try {
+    const j = await apifcFetch("action=get_topscorers&league_id=" + apifcLeagueId);
+    if (!Array.isArray(j)){
+      apifcTopDebug.error = (j && (j.message || j.error)) ? String(j.message || j.error).slice(0,200) : "no array returned";
+      return;
+    }
+    const list = j.map(r=>{
+      const team = resolveTeam(r.team_name) || r.team_name || "";
+      const g = parseInt(r.goals, 10);
+      const a = (r.assists !== undefined && r.assists !== "" && r.assists !== null) ? parseInt(r.assists, 10) : null;
+      return {
+        name: r.player_name || r.player || "Unknown",
+        team,
+        flag: FLAGS[team] || "",
+        goals: Number.isNaN(g) ? 0 : g,
+        assists: (a === null || Number.isNaN(a)) ? null : a,
+        matches: null
+      };
+    }).filter(s => s.name !== "Unknown");
+    if (list.length){ scorers = list; }                      // becomes the Golden Boot leaderboard
+    apifcTopDebug = { lastFetch: new Date().toISOString(), count: list.length, sample: j.slice(0,3), error: null };
+  } catch(e){ apifcTopDebug.error = String(e.message || e).slice(0,200); }
+}
+
 
 
 if (API_TOKEN) {
@@ -766,7 +795,8 @@ if (TSDB_KEY) {
 }
 
 if (APIFC_KEY) {
-  apifcDiscoverLeague().then(apifcLoop);
+  apifcDiscoverLeague().then(()=>{ apifcLoop(); apifcTopScorers(); });
+  setInterval(apifcTopScorers, 10*60*1000);   // refresh the Golden Boot every 10 min
 }
 
 
@@ -823,7 +853,8 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/api/debug" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ afStatus, tsdbStatus, tsdbMapped: Object.keys(tsdbEventMap).length,
-      tsdbDebug, apifcStatus, apifcDebug,
+      tsdbDebug, apifcStatus, apifcDebug, apifcTopDebug,
+      scorersCount: scorers.length,
       mappedFixtures: Object.keys(afFixtureMap).length,
       sampleExtra: Object.fromEntries(Object.entries(matchExtra).slice(0,3)), liveInfo }, null, 2));
   }
